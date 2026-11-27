@@ -1,168 +1,201 @@
-name: Build APK
+name: Build NeKo VPN APK
 
 on:
+  push:
+    branches:
+      - main
+      - master
   workflow_dispatch:
     inputs:
       release_tag:
+        description: "Tạo GitHub Release với tag này (để trống nếu chỉ lấy APK trong Artifacts)"
         required: false
         type: string
-  push:
-    branches:
-      - master
-      - main
 
 permissions:
   contents: write
 
+concurrency:
+  group: neko-vpn-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
+    name: Build APK (Xray core)
     runs-on: ubuntu-latest
 
+    env:
+      # AndroidLibXrayLite v26.11.26 = Xray-core mới nhất tại thời điểm tạo repo.
+      # Đổi tag này khi muốn nâng core; tag phải có asset libv2ray.aar.
+      ANDROID_LIB_XRAY_TAG: v26.11.26
+      NDK_VERSION: 30.0.16248370
+      ABI_FILTERS: "arm64-v8a;armeabi-v7a"
+
+      # Tùy chọn: thêm 4 secret này để dùng keystore cố định.
+      # Nếu không thêm, workflow tự tạo keystore và lưu trong Actions cache.
+      KEYSTORE_BASE64: ${{ secrets.APP_KEYSTORE_BASE64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.APP_KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.APP_KEYSTORE_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.APP_KEY_PASSWORD }}
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v7
-      with:
-        submodules: 'recursive'
-        fetch-depth: '0'
+      - name: Checkout source + submodules
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
 
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v4
-      with:
-        log-accepted-android-sdk-licenses: false
-        cmdline-tools-version: '14742923'
-        packages: 'platforms;android-37.1 build-tools;37.0.0 platform-tools'
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          log-accepted-android-sdk-licenses: false
+          cmdline-tools-version: '14742923'
+          packages: 'platforms;android-37.1 build-tools;37.0.0 platform-tools'
 
-    - name: Install NDK
-      run: |
-        echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-          --channel=0 \
-          --install "ndk;30.0.16248370"
-        echo "NDK_HOME=$ANDROID_HOME/ndk/30.0.16248370" >> $GITHUB_ENV
-        sed -i '10i\
-        \
-            ndkVersion = "30.0.16248370"' ${{ github.workspace }}/V2rayNG/app/build.gradle.kts
+      - name: Install Android NDK
+        run: |
+          echo "y" | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            --channel=0 \
+            --install "ndk;$NDK_VERSION"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
 
-    - name: Restore cached libhevtun
-      id: cache-libhevtun-restore
-      uses: actions/cache/restore@v6
-      with:
-        path: ${{ github.workspace }}/libs
-        key: libhevtun-${{ runner.os }}-${{ env.NDK_HOME }}-${{ hashFiles('.git/modules/hev-socks5-tunnel/HEAD') }}-${{ hashFiles('compile-hevtun.sh') }}
+      - name: Build hev-socks5-tunnel (native TUN, all ABIs)
+        run: bash compile-hevtun.sh
 
-    - name: Build libhevtun
-      if: steps.cache-libhevtun-restore.outputs.cache-hit != 'true'
-      run: |
-        bash compile-hevtun.sh
-    
-    - name: Save libhevtun
-      if: steps.cache-libhevtun-restore.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v6
-      with:
-        path: ${{ github.workspace }}/libs
-        key: libhevtun-${{ runner.os }}-${{ env.NDK_HOME }}-${{ hashFiles('.git/modules/hev-socks5-tunnel/HEAD') }}-${{ hashFiles('compile-hevtun.sh') }}
+      - name: Copy native TUN libraries
+        run: cp -r libs V2rayNG/app
 
-    - name: Copy libhevtun
-      run: |
-        cp -r ${{ github.workspace }}/libs ${{ github.workspace }}/V2rayNG/app
+      - name: Download libv2ray.aar (Xray core)
+        uses: robinraju/release-downloader@v1.13
+        with:
+          repository: '2dust/AndroidLibXrayLite'
+          tag: ${{ env.ANDROID_LIB_XRAY_TAG }}
+          fileName: 'libv2ray.aar'
+          out-file-path: V2rayNG/app/libs/
 
-    - name: Download libv2ray
-      uses: robinraju/release-downloader@v1.13
-      with:
-        repository: '2dust/AndroidLibXrayLite'
-        tag: 'v26.8.20'
-        fileName: 'libv2ray.aar'
-        out-file-path: V2rayNG/app/libs/
+      - name: Setup Java 21
+        uses: actions/setup-java@v6.3.0
+        with:
+          distribution: 'temurin'
+          java-version: '21'
 
-    - name: Setup Java
-      uses: actions/setup-java@v6.3.0
-      with:
-        distribution: 'temurin'
-        java-version: '21'
+      - name: Restore fallback signing key
+        id: fallback-key
+        uses: actions/cache/restore@v6
+        with:
+          path: .signing
+          key: neko-fallback-signing-v1
 
-    - name: Prepare Keystore
-      run: |
-        if [ -n "${{ secrets.APP_KEYSTORE_BASE64 }}" ]; then
-          echo "${{ secrets.APP_KEYSTORE_BASE64 }}" | base64 -d > ${{ github.workspace }}/release.jks
-          echo "KEYSTORE_PATH=${{ github.workspace }}/release.jks" >> $GITHUB_ENV
-          echo "KEYSTORE_PASS=${{ secrets.APP_KEYSTORE_PASSWORD }}" >> $GITHUB_ENV
-          echo "KEY_ALIAS=${{ secrets.APP_KEYSTORE_ALIAS }}" >> $GITHUB_ENV
-          echo "KEY_PASS=${{ secrets.APP_KEY_PASSWORD }}" >> $GITHUB_ENV
-        else
-          keytool -genkeypair -v -keystore ${{ github.workspace }}/release.jks -alias nekovpn -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=NeKoVPN, OU=NeKo, O=NeKo, L=HCM, S=HCM, C=VN"
-          echo "KEYSTORE_PATH=${{ github.workspace }}/release.jks" >> $GITHUB_ENV
-          echo "KEYSTORE_PASS=123456" >> $GITHUB_ENV
-          echo "KEY_ALIAS=nekovpn" >> $GITHUB_ENV
-          echo "KEY_PASS=123456" >> $GITHUB_ENV
-        fi
+      - name: Prepare signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .signing
 
-    - name: Build APK
-      run: |
-        cd ${{ github.workspace }}/V2rayNG
-        echo "sdk.dir=${ANDROID_HOME}" > local.properties
-        chmod 755 gradlew
-        ./gradlew licenseFdroidReleaseReport
-        ./gradlew assembleRelease \
-          -Pandroid.injected.signing.store.file=${{ env.KEYSTORE_PATH }} \
-          -Pandroid.injected.signing.store.password=${{ env.KEYSTORE_PASS }} \
-          -Pandroid.injected.signing.key.alias=${{ env.KEY_ALIAS }} \
-          -Pandroid.injected.signing.key.password=${{ env.KEY_PASS }}
-    
-    - name: Upload arm64-v8a APK
-      uses: actions/upload-artifact@v7
-      if: ${{  success() }}
-      with:
-        name: arm64-v8a
-        path: ${{ github.workspace }}/V2rayNG/app/build/outputs/apk/*/release/*arm64-v8a*.apk
+          if [ -n "${KEYSTORE_BASE64:-}" ]; then
+            echo "Using keystore from repository secrets."
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > .signing/neko.jks
+            {
+              echo "STORE_PASS=$KEYSTORE_PASSWORD"
+              echo "KEY_PASS=$KEY_PASSWORD"
+              echo "KEY_ALIAS=$KEY_ALIAS"
+            } >> "$GITHUB_ENV"
+          elif [ -f .signing/neko.jks ] && [ -f .signing/pass.txt ]; then
+            echo "Using cached fallback keystore."
+            PASS="$(cat .signing/pass.txt)"
+            {
+              echo "STORE_PASS=$PASS"
+              echo "KEY_PASS=$PASS"
+              echo "KEY_ALIAS=neko"
+            } >> "$GITHUB_ENV"
+          else
+            echo "No signing secret found: generating a fallback keystore."
+            PASS="$(openssl rand -hex 24)"
+            keytool -genkeypair \
+              -keystore .signing/neko.jks \
+              -alias neko \
+              -keyalg RSA \
+              -keysize 4096 \
+              -validity 10000 \
+              -storepass "$PASS" \
+              -keypass "$PASS" \
+              -dname "CN=NeKo VPN, OU=NeKo VPN, O=NeKo VPN, L=Hanoi, ST=Hanoi, C=VN"
+            printf '%s' "$PASS" > .signing/pass.txt
+            {
+              echo "STORE_PASS=$PASS"
+              echo "KEY_PASS=$PASS"
+              echo "KEY_ALIAS=neko"
+            } >> "$GITHUB_ENV"
+          fi
 
-    - name: Upload armeabi-v7a APK
-      uses: actions/upload-artifact@v7
-      if: ${{  success() }}
-      with:
-        name: armeabi-v7a
-        path: ${{ github.workspace }}/V2rayNG/app/build/outputs/apk/*/release/*armeabi-v7a*.apk
+      - name: Save fallback signing key
+        if: env.KEYSTORE_BASE64 == '' && steps.fallback-key.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: .signing
+          key: neko-fallback-signing-v1
 
-    - name: Upload x86 APK
-      uses: actions/upload-artifact@v7
-      if: ${{  success() }}
-      with:
-        name: x86-apk
-        path: ${{ github.workspace }}/V2rayNG/app/build/outputs/apk/*/release/*x86*.apk
+      - name: Build signed release APKs
+        run: |
+          cd V2rayNG
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          chmod +x gradlew
+          ./gradlew :app:assemblePlaystoreRelease \
+            -PABI_FILTERS="$ABI_FILTERS" \
+            -Pandroid.injected.signing.store.file="$GITHUB_WORKSPACE/.signing/neko.jks" \
+            -Pandroid.injected.signing.store.password="$STORE_PASS" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASS" \
+            --console=plain
 
-    - name: Upload universal APK
-      uses: actions/upload-artifact@v7
-      if: ${{ success() }}
-      with:
-        name: universal-apk
-        path: ${{ github.workspace }}/V2rayNG/app/build/outputs/apk/*/release/*universal*.apk
+      - name: Verify APKs
+        run: |
+          set -e
+          APK_DIR="V2rayNG/app/build/outputs/apk/playstore/release"
+          ls -lh "$APK_DIR"/*.apk
+          for apk in "$APK_DIR"/*.apk; do
+            "$ANDROID_HOME/build-tools/37.0.0/apksigner" verify --print-certs "$apk"
+          done
 
-  sign-and-release:
+      - name: Build summary
+        run: |
+          {
+            echo "### NeKo VPN - APK đã build"
+            echo ""
+            echo "| File | Size |"
+            echo "|---|---|"
+            for apk in V2rayNG/app/build/outputs/apk/playstore/release/*.apk; do
+              echo "| \`$(basename "$apk")\` | $(du -h "$apk" | cut -f1) |"
+            done
+            echo ""
+            echo "Tải APK ở mục **Artifacts** của workflow run này."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: NeKoVPN-${{ github.run_number }}
+          path: V2rayNG/app/build/outputs/apk/playstore/release/*.apk
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
     needs: build
-    runs-on: ubuntu-26.04
     if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
-
+    runs-on: ubuntu-latest
     steps:
       - name: Download APK artifacts
         uses: actions/download-artifact@v8
         with:
-          path: release
+          pattern: NeKoVPN-*
+          path: apk
+          merge-multiple: true
 
-      - name: Sign APK files
-        run: |
-          printf '%s' "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
-          KEY=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
-          mkdir -p release-files
-
-          find release -type f -name '*.apk' | while read apk; do
-            cp "$apk" release-files/
-            gpg --batch --yes --local-user "$KEY" --detach-sign --output "release-files/$(basename "$apk").sig" "$apk"
-          done
-
-          gpg --armor --export "$KEY" > release-files/v2rayN-public-key.asc
-
-      - name: Upload APKs, signatures and public key to release
-        uses: svenstaro/upload-release-action@v2
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
         with:
-          file: release-files/*
-          tag: ${{ inputs.release_tag }}
-          file_glob: true
+          tag_name: ${{ inputs.release_tag }}
+          name: NeKo VPN ${{ inputs.release_tag }}
+          files: apk/*.apk
           prerelease: true
+          generate_release_notes: true

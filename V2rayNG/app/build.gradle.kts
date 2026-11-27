@@ -18,7 +18,7 @@ android {
         minSdk = 24
         targetSdk = 37
         versionCode = 762
-        versionName = "2.4.2"
+        versionName = "2.4.2-neko"
 
         val abiFilterList = (properties["ABI_FILTERS"] as? String)?.split(';')
         splits {
@@ -96,7 +96,7 @@ android {
                 .map { it as com.android.build.gradle.internal.api.ApkVariantOutputImpl }
                 .forEach { output ->
                     val abi = output.getFilter("ABI") ?: "universal"
-                    output.outputFileName = "v2rayNG_${variant.versionName}-fdroid_${abi}.apk"
+                    output.outputFileName = "NeKoVPN_${variant.versionName}-fdroid_${abi}.apk"
                     if (versionCodes.containsKey(abi)) {
                         output.versionCodeOverride =
                             (100 * variant.versionCode + versionCodes[abi]!!).plus(5000000)
@@ -116,7 +116,7 @@ android {
                     else
                         "universal"
 
-                    output.outputFileName = "v2rayNG_${variant.versionName}_${abi}.apk"
+                    output.outputFileName = "NeKoVPN_${variant.versionName}_${abi}.apk"
                     if (versionCodes.containsKey(abi)) {
                         output.versionCodeOverride =
                             (1000000 * versionCodes[abi]!!).plus(variant.versionCode)
