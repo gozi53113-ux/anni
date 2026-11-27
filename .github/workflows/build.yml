@@ -180,7 +180,7 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Download APK artifacts
@@ -193,8 +193,8 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.release_tag }}
-          name: NeKo VPN ${{ inputs.release_tag }}
+          tag_name: ${{ inputs.release_tag || 'v2.4.2' }}
+          name: NeKo VPN ${{ inputs.release_tag || 'v2.4.2' }}
           files: apk/*.apk
-          prerelease: true
+          prerelease: false
           generate_release_notes: true
