@@ -25,9 +25,8 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # AndroidLibXrayLite v26.11.26 = Xray-core mới nhất tại thời điểm tạo repo.
-      # Đổi tag này khi muốn nâng core; tag phải có asset libv2ray.aar.
-      ANDROID_LIB_XRAY_TAG: v26.11.26
+      # AndroidLibXrayLite v26.1.31: Ho tro day du VLESS port 80 va allowInsecure (truoc v26.2.6/v26.9.9)
+      ANDROID_LIB_XRAY_TAG: v26.1.31
       NDK_VERSION: 30.0.16248370
       ABI_FILTERS: "arm64-v8a;armeabi-v7a"
 
